@@ -1,5 +1,3 @@
-# resume_traning
-
 # 前言
 
 在机器学习的场景中，训练数据经常会特别大，训练可能要持续好几天甚至上周。如果中途机器断电或是发生意外不得不中断训练过程，那就得不偿失。
@@ -11,8 +9,7 @@
 存在两个巨大的问题：
 
 1. 继续训练会有这样一个影响，就是我们的学习率如果是不固定的，比如前100 epoch 学习率0.1，后100 epoch 学习率要0.01，这样的话，epoch这个数据比需要被记录下来。
-
-2. 如果`save_best_only`会一遍遍覆盖旧的`.h5`文件，当重新加载的时候，`mointor`是正负无穷（正负取决于`mointor`是`val_loss`还是`val_acc`等）
+2. 如果设`save_best_only=True`，会一遍遍覆盖旧的`.h5`文件，当重新加载的时候，`self.best`是正负无穷（正负取决于`mointor`是`val_loss`还是`val_acc`等）
 
 要做到从上次落下的地方继续训练，首先需要明确我们保存模型的方法是什么！
 
@@ -41,16 +38,26 @@
 # 导入相关依赖
 
 ```python
-from keras.callbacks import Callback, ModelCheckpoint
-import yaml
+from keras.callbacks import ModelCheckpoint
 import h5py
 import numpy as np
 import keras
 ```
 
+上述引入使用的是`keras`自身API，如果您需要使用`tensorflow.keras`请导入如下依赖：
+
+```python
+from tensorflow.keras.callbacks import ModelCheckpoint
+import h5py
+import numpy as np
+from tensorflow import keras
+```
+
+
+
 其中`ModelCheckpoint`就是我们今天的猪脚。
 
-有关于更多`callback`的内容，请参阅官方文档<https://keras-cn.readthedocs.io/en/latest/other/callbacks/>
+有关于更多`callback`的内容，请参阅官方文档：<https://keras-cn.readthedocs.io/en/latest/other/callbacks/>
 
 
 
@@ -67,6 +74,8 @@ test_labels = test_labels[:1000]
 train_images = train_images[:1000].reshape(-1, 28 * 28) / 255.0
 test_images = test_images[:1000].reshape(-1, 28 * 28) / 255.0
 ```
+
+> 如果下载数据集的过程中出现问题，请选择代理 或 在`keras api`和`tensorflow.keras`之间切换，前者将数据托管在amazon上，后者在google上。请酌情选择。
 
 # 构建一个简单的神经网络
 
@@ -123,12 +132,6 @@ if not os.path.exists('./results/'):
 
 ```python
 class MetaCheckpoint(ModelCheckpoint):
-    """
-    Checkpoints some training information with the model. This should enable
-    resuming training and having training information on every checkpoint.
-    Thanks to Roberto Estevao @robertomest - robertomest@poli.ufrj.br
-    """
-
     def __init__(self, filepath, monitor='val_loss', verbose=0,
                  save_best_only=False, save_weights_only=False,
                  mode='auto', period=1, training_args=None, meta=None):
@@ -142,6 +145,7 @@ class MetaCheckpoint(ModelCheckpoint):
                                              period=period)
 
         self.filepath = filepath
+        self.new_file_override = True
         self.meta = meta or {'epochs': [], self.monitor: []}
 
         if training_args:
@@ -157,6 +161,14 @@ class MetaCheckpoint(ModelCheckpoint):
         super(MetaCheckpoint, self).on_train_begin(logs)
 
     def on_epoch_end(self, epoch, logs={}):
+        # 只有在‘只保存’最优版本且生成新的.h5文件的情况下
+        if self.save_best_only:
+            current = logs.get(self.monitor)
+            if self.monitor_op(current, self.best):
+                self.new_file_override = True
+            else:
+                self.new_file_override = False
+
         super(MetaCheckpoint, self).on_epoch_end(epoch, logs)
 
         # Get statistics
@@ -168,7 +180,8 @@ class MetaCheckpoint(ModelCheckpoint):
         # Save to file
         filepath = self.filepath.format(epoch=epoch, **logs)
 
-        if logs.get(self.monitor) == self.best and self.epochs_since_last_save == 0:
+        if self.new_file_override and self.epochs_since_last_save == 0:
+            # 只有在‘只保存’最优版本且生成新的.h5文件的情况下 才会继续添加meta
             with h5py.File(filepath, 'r+') as f:
                 meta_group = f.create_group('meta')
                 meta_group.attrs['training_args'] = yaml.dump(
@@ -217,7 +230,7 @@ self.meta['epochs'].append(epoch)
 
 然后视情况而定，是否要保存到`.h5`文件
 
-1. `logs.get(self.monitor) == self.best`说明经过判断，认为此次训练产生了更好的`val_acc`或`val_loss`（取决于你的设定），`best`值一被更新。
+1. `self.new_file_override`说明经过判断，认为此次训练产生了更好的`val_acc`或`val_loss`（取决于你的设定），`best`值被更新。
 2. `self.epochs_since_last_save == 0`说明模型文件已经存储至你指定的路径。
 
 如果满足以上两点要求，我们就可以往模型文件里面附加本次训练的`meta`数据。
@@ -475,8 +488,6 @@ Epoch 00010: val_acc did not improve from 0.87300
 可以看见，确实是从第2个epoch开始训练的。
 
 这！就是我们想要的效果。
-
-
 
 # 博客地址
 

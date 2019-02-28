@@ -1,8 +1,7 @@
-from keras.callbacks import Callback, ModelCheckpoint
-import yaml
+from tensorflow.keras.callbacks import ModelCheckpoint
 import h5py
 import numpy as np
-import keras
+from tensorflow import keras
 
 (train_images, train_labels), (test_images, test_labels) = keras.datasets.mnist.load_data()
 
@@ -12,19 +11,21 @@ test_labels = test_labels[:1000]
 train_images = train_images[:1000].reshape(-1, 28 * 28) / 255.0
 test_images = test_images[:1000].reshape(-1, 28 * 28) / 255.0
 
+
 # Returns a short sequential model
 def create_model():
-  model = keras.models.Sequential([
-    keras.layers.Dense(512, activation="relu", input_shape=(784,)),
-    keras.layers.Dropout(0.2),
-    keras.layers.Dense(10, activation="softmax")
-  ])
+    model = keras.models.Sequential([
+        keras.layers.Dense(512, activation="relu", input_shape=(784,)),
+        keras.layers.Dropout(0.2),
+        keras.layers.Dense(10, activation="softmax")
+    ])
 
-  model.compile(optimizer=keras.optimizers.Adam(),
-                loss=keras.losses.sparse_categorical_crossentropy,
-                metrics=['accuracy'])
+    model.compile(optimizer=keras.optimizers.Adam(),
+                  loss=keras.losses.sparse_categorical_crossentropy,
+                  metrics=['accuracy'])
 
-  return model
+    return model
+
 
 # Create a basic model instance
 model = create_model()
@@ -32,16 +33,12 @@ model.summary()
 model = create_model()
 
 import os
+
 if not os.path.exists('./results/'):
     os.mkdir('./results/')
 
-class MetaCheckpoint(ModelCheckpoint):
-    """
-    Checkpoints some training information with the model. This should enable
-    resuming training and having training information on every checkpoint.
-    Thanks to Roberto Estevao @robertomest - robertomest@poli.ufrj.br
-    """
 
+class MetaCheckpoint(ModelCheckpoint):
     def __init__(self, filepath, monitor='val_loss', verbose=0,
                  save_best_only=False, save_weights_only=False,
                  mode='auto', period=1, training_args=None, meta=None):
@@ -55,6 +52,7 @@ class MetaCheckpoint(ModelCheckpoint):
                                              period=period)
 
         self.filepath = filepath
+        self.new_file_override = True
         self.meta = meta or {'epochs': [], self.monitor: []}
 
         if training_args:
@@ -70,6 +68,14 @@ class MetaCheckpoint(ModelCheckpoint):
         super(MetaCheckpoint, self).on_train_begin(logs)
 
     def on_epoch_end(self, epoch, logs={}):
+        # 只有在‘只保存’最优版本且生成新的.h5文件的情况下
+        if self.save_best_only:
+            current = logs.get(self.monitor)
+            if self.monitor_op(current, self.best):
+                self.new_file_override = True
+            else:
+                self.new_file_override = False
+
         super(MetaCheckpoint, self).on_epoch_end(epoch, logs)
 
         # Get statistics
@@ -81,7 +87,8 @@ class MetaCheckpoint(ModelCheckpoint):
         # Save to file
         filepath = self.filepath.format(epoch=epoch, **logs)
 
-        if logs.get(self.monitor) == self.best and self.epochs_since_last_save == 0:
+        if self.new_file_override and self.epochs_since_last_save == 0:
+            # 只有在‘只保存’最优版本且生成新的.h5文件的情况下 才会继续添加meta
             with h5py.File(filepath, 'r+') as f:
                 meta_group = f.create_group('meta')
                 meta_group.attrs['training_args'] = yaml.dump(
@@ -92,9 +99,14 @@ class MetaCheckpoint(ModelCheckpoint):
 
 
 import yaml
+
+
 def load_meta(model_fname):
-    ''' Load meta configuration
-    '''
+    """
+    Load meta configuration
+    :param model_fname: model file name
+    :return: meta info
+    """
     meta = {}
 
     with h5py.File(model_fname, 'r') as f:
@@ -107,6 +119,7 @@ def load_meta(model_fname):
 
     return meta
 
+
 def get_last_status(model):
     last_epoch = -1
     last_meta = {}
@@ -116,13 +129,14 @@ def get_last_status(model):
         last_epoch = last_meta.get('epochs')[-1]
     return last_epoch, last_meta
 
+
 last_epoch, last_meta = get_last_status(model)
 
 checkpoint = MetaCheckpoint('./results/pointnet.h5', monitor='val_acc',
                             save_weights_only=True, save_best_only=True,
                             verbose=1, meta=last_meta)
 
-model.fit(train_images, train_labels,  epochs = 10,
-          validation_data = (test_images,test_labels),
-          callbacks = [checkpoint],
-          initial_epoch=last_epoch+1)
+model.fit(train_images, train_labels, epochs=10,
+          validation_data=(test_images, test_labels),
+          callbacks=[checkpoint],
+          initial_epoch=last_epoch + 1)
